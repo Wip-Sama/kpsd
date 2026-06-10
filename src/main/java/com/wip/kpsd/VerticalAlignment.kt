@@ -11,5 +11,11 @@ enum class VerticalAlignment {
     CENTER,
     
     /** Align the text to the bottom of the shape bounds. */
-    BOTTOM
+    BOTTOM,
+    
+    /** 
+     * Optically center the text. The visual mass of the text (ignoring descenders)
+     * is placed perfectly in the center of the shape bounds.
+     */
+    CENTER_OPTICAL
 }

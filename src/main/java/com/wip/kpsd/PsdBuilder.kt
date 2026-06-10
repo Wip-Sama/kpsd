@@ -474,15 +474,31 @@ class TextLayerBuilder(var name: String? = null, var text: String) {
             finalText = formatResult.text
             val visualHeight = formatResult.visualHeight
             
-            if (verticalAlignment == VerticalAlignment.CENTER) {
-                val shift = (bounds.height - visualHeight) / 2f
+            if (verticalAlignment == VerticalAlignment.CENTER || verticalAlignment == VerticalAlignment.CENTER_OPTICAL) {
+                var shift = (bounds.height - visualHeight) / 2f
+                if (verticalAlignment == VerticalAlignment.CENTER_OPTICAL) {
+                    // Shift the box down by half the descent to center the optical mass
+                    shift += formatResult.descent / 2f
+                }
+                
                 if (shift > 0f) {
-                    finalTop += shift
-                    finalBottom -= shift
+                    val opticalOffset = if (verticalAlignment == VerticalAlignment.CENTER_OPTICAL) formatResult.descent / 2f else 0f
+                    val symShift = (bounds.height - visualHeight) / 2f
+                    
+                    finalTop += symShift + opticalOffset
+                    finalBottom -= symShift - opticalOffset
+                    
                     finalBoxBounds = finalBoxBounds?.clone()
                     if (finalBoxBounds != null && finalBoxBounds.size >= 4) {
-                        finalBoxBounds[1] += shift
-                        finalBoxBounds[3] -= shift
+                        if (verticalAlignment == VerticalAlignment.CENTER_OPTICAL) {
+                            val opticalOffset = formatResult.descent / 2f
+                            val symShift = (bounds.height - visualHeight) / 2f
+                            finalBoxBounds[1] += symShift + opticalOffset
+                            finalBoxBounds[3] -= symShift - opticalOffset
+                        } else {
+                            finalBoxBounds[1] += shift
+                            finalBoxBounds[3] -= shift
+                        }
                     }
                 }
             } else if (verticalAlignment == VerticalAlignment.BOTTOM) {

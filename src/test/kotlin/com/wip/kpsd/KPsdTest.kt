@@ -997,15 +997,16 @@ class KPsdTest {
         outDir.mkdirs()
 
         val canvasWidth = 1150
-        val canvasHeight = 800
+        val canvasHeight = 1200
 
-        // Create a background with three ellipses drawn in light gray
+        // Create a background with three ellipses and a rectangle drawn in light gray
         val bgData = ByteArray(canvasWidth * canvasHeight * 4)
         for (y in 0 until canvasHeight) {
             for (x in 0 until canvasWidth) {
                     var inside1 = false
                     var inside2 = false
                     var inside3 = false
+                    var inside4 = false
                     
                     // Ellipse 1: center(400, 250), rx=300, ry=150 (corresponds to [100, 100] to [700, 400])
                     val dx1 = (x - 400).toDouble() / 300.0
@@ -1022,13 +1023,25 @@ class KPsdTest {
                     val dy3 = (y - 400).toDouble() / 300.0
                     if (dx3 * dx3 + dy3 * dy3 <= 1.0) inside3 = true
                     
-                    val c = if (inside1 || inside2 || inside3) 220 else 255
+                    // Rectangle 4 (Left): w=450, h=300 (corresponds to [100, 850] to [550, 1150])
+                    if (x in 100..550 && y in 850..1150) inside4 = true
+                    
+                    // Rectangle 5 (Right): w=450, h=300 (corresponds to [650, 850] to [1100, 1150])
+                    var inside5 = false
+                    if (x in 650..1100 && y in 850..1150) inside5 = true
+                    
+                    val c = if (inside1 || inside2 || inside3 || inside4 || inside5) 220 else 255
                     var finalC = c
                     
                     // Draw crosshairs
                     if ((x == 400 && y in 100..400) || (y == 250 && x in 100..700)) finalC = 150
                     if ((x == 400 && y in 450..750) || (y == 600 && x in 100..700)) finalC = 150
                     if ((x == 950 && y in 100..700) || (y == 400 && x in 800..1100)) finalC = 150
+                    
+                    // Crosshair for Rectangle 4 (Left)
+                    if ((x == 325 && y in 850..1150) || (y == 1000 && x in 100..550)) finalC = 150
+                    // Crosshair for Rectangle 5 (Right)
+                    if ((x == 875 && y in 850..1150) || (y == 1000 && x in 650..1100)) finalC = 150
                     
                     val idx = (y * canvasWidth + x) * 4
                     bgData[idx] = finalC.toByte()     // R
@@ -1121,6 +1134,48 @@ class KPsdTest {
                     justification = Justification.CENTER
                 }
             }
+
+            textLayer(textValue = "Bounding Box Centering. This text is centered geometrically.") {
+                name = "Bounding Box Centering Test"
+                top = 850; left = 100; bottom = 1150; right = 550
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 450f, 300f)
+                
+                boundaryShape = RectangleBoundary(padding = 20f)
+                wordBreak = WordBreak.HYPHENATE
+                verticalAlignment = VerticalAlignment.CENTER
+                
+                style {
+                    font(name = "ArialMT")
+                    fillColor(0, 0, 0)
+                    autoFit = AutoFit(minSize = 10f, maxSize = 48f)
+                }
+                
+                paragraphStyle {
+                    justification = Justification.CENTER
+                }
+            }
+
+            textLayer(textValue = "Optical Centering. This text is centered visually.") {
+                name = "Optical Centering Test"
+                top = 850; left = 650; bottom = 1150; right = 1100
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 450f, 300f)
+                
+                boundaryShape = RectangleBoundary(padding = 20f)
+                wordBreak = WordBreak.HYPHENATE
+                verticalAlignment = VerticalAlignment.CENTER_OPTICAL
+                
+                style {
+                    font(name = "ArialMT")
+                    fillColor(0, 0, 0)
+                    autoFit = AutoFit(minSize = 10f, maxSize = 48f)
+                }
+                
+                paragraphStyle {
+                    justification = Justification.CENTER
+                }
+            }
         }
 
         val layerBoundsTest = doc.children.find { it.name == "Layer Bounds Test" }!!
@@ -1186,6 +1241,101 @@ class KPsdTest {
 
         val psdBytes = KPsd.write(doc, compress = false)
         val outFile = java.io.File(outDir, "word_break_tests.psd")
+        outFile.writeBytes(psdBytes)
+        println("Saved generated PSD to ${outFile.absolutePath}")
+    }
+
+    @Test
+    fun testOpticalCenteringAndPadding() {
+        val outDir = java.io.File("build/test_psds")
+        outDir.mkdirs()
+
+        val canvasWidth = 1500
+        val canvasHeight = 2000
+
+        // Draw background with ellipses
+        val bgData = ByteArray(canvasWidth * canvasHeight * 4)
+        for (y in 0 until canvasHeight) {
+            for (x in 0 until canvasWidth) {
+                var inside = false
+                var isCrosshair = false
+
+                // 4 rows, 3 columns
+                val col = x / 500
+                val row = y / 500
+                val cx = col * 500 + 250
+                val cy = row * 500 + 250
+
+                // Horizontal ellipses for rows 0 and 1, Vertical for rows 2 and 3
+                val rx = if (row < 2) 200.0 else 120.0
+                val ry = if (row < 2) 120.0 else 200.0
+
+                val dx = (x - cx).toDouble() / rx
+                val dy = (y - cy).toDouble() / ry
+                if (dx * dx + dy * dy <= 1.0) inside = true
+
+                if (x == cx && y in (cy - ry.toInt())..(cy + ry.toInt())) isCrosshair = true
+                if (y == cy && x in (cx - rx.toInt())..(cx + rx.toInt())) isCrosshair = true
+
+                val c = if (isCrosshair) 150 else if (inside) 220 else 255
+                val idx = (y * canvasWidth + x) * 4
+                bgData[idx] = c.toByte()     // R
+                bgData[idx + 1] = c.toByte() // G
+                bgData[idx + 2] = c.toByte() // B
+                bgData[idx + 3] = 255.toByte() // A
+            }
+        }
+        val bgPixelData = PixelData(canvasWidth, canvasHeight, bgData)
+
+        val doc = psd(width = canvasWidth, height = canvasHeight) {
+            layer("Background") {
+                top = 0; left = 0; bottom = canvasHeight; right = canvasWidth
+                imageData = bgPixelData
+            }
+
+            val paddings = listOf(0f, 20f, 50f)
+            val alignments = listOf(VerticalAlignment.CENTER, VerticalAlignment.CENTER_OPTICAL, VerticalAlignment.CENTER, VerticalAlignment.CENTER_OPTICAL)
+
+            for (row in 0 until 4) {
+                for (col in 0 until 3) {
+                    val cx = col * 500 + 250
+                    val cy = row * 500 + 250
+                    val rx = if (row < 2) 200f else 120f
+                    val ry = if (row < 2) 120f else 200f
+                    val pad = paddings[col]
+                    val align = alignments[row]
+
+                    val alignmentName = if (align == VerticalAlignment.CENTER) "CENTER" else "OPTICAL"
+                    val shapeName = if (row < 2) "Horizontal" else "Vertical"
+                    val testString = "$shapeName Ellipse\nPadding: ${pad.toInt()}\nAlign: $alignmentName\nThis is some extra text to see how well it fits and wraps inside the boundaries."
+
+                    textLayer(textValue = testString) {
+                        name = "R${row}_C${col}_Pad${pad.toInt()}_$alignmentName"
+                        top = (cy - ry).toInt(); left = (cx - rx).toInt()
+                        bottom = (cy + ry).toInt(); right = (cx + rx).toInt()
+                        shapeType = TextShapeType.BOX
+                        boxBounds = floatArrayOf(0f, 0f, rx * 2, ry * 2)
+                        
+                        boundaryShape = EllipseBoundary(padding = pad)
+                        wordBreak = WordBreak.HYPHENATE
+                        verticalAlignment = align
+                        
+                        style {
+                            font(name = "ArialMT")
+                            fillColor(0, 0, 0)
+                            autoFit = AutoFit(minSize = 10f, maxSize = 36f)
+                        }
+                        
+                        paragraphStyle {
+                            justification = Justification.CENTER
+                        }
+                    }
+                }
+            }
+        }
+
+        val psdBytes = KPsd.write(doc, compress = false)
+        val outFile = java.io.File(outDir, "optical_centering_and_padding_tests.psd")
         outFile.writeBytes(psdBytes)
         println("Saved generated PSD to ${outFile.absolutePath}")
     }

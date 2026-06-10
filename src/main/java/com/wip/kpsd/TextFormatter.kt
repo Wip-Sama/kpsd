@@ -11,6 +11,17 @@ import kotlin.math.cos
 
 object TextFormatter {
 
+    // Layout scoring weights. Can be adjusted to tweak text wrapping aesthetics.
+    const val SCORE_WEIGHT_FULLNESS = 1.0f
+    const val SCORE_PENALTY_SINGLE_WORD = 0.1f
+    const val SCORE_PENALTY_HYPHENATION = 0.05f
+    const val SCORE_WEIGHT_FONT_SIZE = 0.5f
+
+    // AWT string width multiplier to compensate for Photoshop's font rendering differences.
+    // Set to 1.0f to allow text to perfectly hug the shape boundaries, at the minor risk of
+    // Photoshop occasionally rendering words slightly wider than expected.
+    const val AWT_WIDTH_MULTIPLIER = 1.0f
+
     private val graphics: Graphics2D by lazy {
         val img = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
         img.createGraphics()
@@ -61,7 +72,8 @@ object TextFormatter {
         val text: String,
         val totalHeight: Float,
         val visualHeight: Float,
-        val layoutScore: Float
+        val layoutScore: Float,
+        val descent: Float
     )
 
     fun formatTextInternal(
@@ -83,7 +95,7 @@ object TextFormatter {
         if (alignment == VerticalAlignment.TOP) {
             val startBaseline = -(bounds.height / 2f) + metrics.ascent
             val result = doFormat(text, metrics, bounds, shape, wordBreak, startBaseline, leading)
-            return FormatResult(result.text, result.lineCount * leading, result.visualHeight, result.layoutScore)
+            return FormatResult(result.text, result.lineCount * leading, result.visualHeight, result.layoutScore, metrics.descent.toFloat())
         }
 
         var startBaseline = -(bounds.height / 2f) + metrics.ascent
@@ -105,6 +117,8 @@ object TextFormatter {
             
             val targetStartBaseline = if (alignment == VerticalAlignment.CENTER) {
                 -((lineCount - 1) * leading + metrics.descent - metrics.ascent) / 2f
+            } else if (alignment == VerticalAlignment.CENTER_OPTICAL) {
+                -((lineCount - 1) * leading - metrics.ascent) / 2f
             } else {
                 (bounds.height / 2f) - ((lineCount - 1) * leading + metrics.descent)
             }
@@ -115,7 +129,7 @@ object TextFormatter {
             startBaseline = targetStartBaseline
         }
         
-        return FormatResult(bestText, bestTotalHeight, bestVisualHeight, bestLayoutScore)
+        return FormatResult(bestText, bestTotalHeight, bestVisualHeight, bestLayoutScore, metrics.descent.toFloat())
     }
 
     private data class DoFormatResult(
@@ -165,14 +179,14 @@ object TextFormatter {
             val availableWidth = shape.getAvailableWidth(extremeY, bounds)
 
             val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
-            // Multiply the AWT string width by a safety factor (e.g. 1.1f) to prevent
+            // Multiply the AWT string width by a safety factor to prevent
             // Photoshop from further wrapping the line due to rendering differences.
-            val testWidth = metrics.stringWidth(testLine).toFloat() * 1.1f
+            val testWidth = metrics.stringWidth(testLine).toFloat() * AWT_WIDTH_MULTIPLIER
 
             if (testWidth <= availableWidth) {
                 currentLine = testLine
             } else {
-                val wordWidth = metrics.stringWidth(word).toFloat() * 1.1f
+                val wordWidth = metrics.stringWidth(word).toFloat() * AWT_WIDTH_MULTIPLIER
                 if (wordWidth > availableWidth && wordBreak != WordBreak.NONE) {
                     var remainingWord = word
                     while (remainingWord.isNotEmpty()) {
@@ -185,7 +199,7 @@ object TextFormatter {
 
                         for (i in 1..remainingWord.length) {
                             val chunk = remainingWord.substring(0, i)
-                            val width = (metrics.stringWidth(chunk) + dashWidth) * 1.1f
+                            val width = (metrics.stringWidth(chunk) + dashWidth) * AWT_WIDTH_MULTIPLIER
                             if (width > availW && i > 1) {
                                 break
                             }
@@ -226,7 +240,9 @@ object TextFormatter {
         val visualHeight = if (lines.isEmpty()) 0f else (lines.size - 1) * leading + metrics.ascent + metrics.descent
         
         val fullness = if (totalAvailableWidth > 0) totalUsedWidth / totalAvailableWidth else 0f
-        val layoutScore = fullness - (singleWordLineCount * 0.1f) - (hyphenationCount * 0.05f)
+        val layoutScore = (fullness * SCORE_WEIGHT_FULLNESS) - 
+                          (singleWordLineCount * SCORE_PENALTY_SINGLE_WORD) - 
+                          (hyphenationCount * SCORE_PENALTY_HYPHENATION)
 
         return DoFormatResult(lines.joinToString("\r"), lines.size, visualHeight, layoutScore)
     }
@@ -256,6 +272,8 @@ object TextFormatter {
 
             val topExtremeY = if (alignment == VerticalAlignment.CENTER) {
                 -(totalHeight / 2f)
+            } else if (alignment == VerticalAlignment.CENTER_OPTICAL) {
+                -((result.visualHeight - result.descent) / 2f)
             } else if (alignment == VerticalAlignment.BOTTOM) {
                 (bounds.height / 2f) - totalHeight
             } else {
