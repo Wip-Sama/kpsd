@@ -701,7 +701,9 @@ data class TextStyle(
     var hindiNumbers: Boolean? = null,
     var kashida: Float? = null,
     /** Accent marks diacritic positions. */
-    var diacriticPos: Int? = null
+    var diacriticPos: Int? = null,
+    /** Auto-fit text scale constraints. */
+    var autoFit: AutoFit? = null
 )
 
 /**

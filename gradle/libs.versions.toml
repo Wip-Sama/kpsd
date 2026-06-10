@@ -1,5 +1,5 @@
 [versions]
-kpsd = "1.0.0"
+kpsd = "1.1.0"
 kotlin = "2.3.20"
 kotlinx-coroutines = "1.10.2"
 dokka = "2.2.0"

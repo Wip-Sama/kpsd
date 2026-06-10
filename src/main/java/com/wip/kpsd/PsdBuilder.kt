@@ -396,6 +396,10 @@ class TextLayerBuilder(var name: String? = null, var text: String) {
     var shapeType: TextShapeType = TextShapeType.POINT
     var boxBounds: FloatArray? = null
     
+    var boundaryShape: TextBoundary? = null
+    var wordBreak: WordBreak = WordBreak.NONE
+    var verticalAlignment: VerticalAlignment = VerticalAlignment.TOP
+    
     var style: TextStyle? = null
     var paragraphStyle: ParagraphStyle? = null
     var styleRuns: List<TextStyleRun>? = null
@@ -441,26 +445,78 @@ class TextLayerBuilder(var name: String? = null, var text: String) {
      */
     fun build(): Layer {
         val finalStyle = style ?: TextStyle()
+        
+        var finalText = text
+        var finalStyleAfterFit = finalStyle
+        
+        var finalTop = textTop ?: (if (shapeType == TextShapeType.BOX) 0f else top.toFloat())
+        var finalBottom = textBottom ?: (if (shapeType == TextShapeType.BOX && boxBounds != null && boxBounds!!.size >= 4) boxBounds!![3] else bottom.toFloat())
+        var finalTransform = transform ?: doubleArrayOf(1.0, 0.0, 0.0, 1.0, left.toDouble(), top.toDouble())
+        var finalBoxBounds = boxBounds
+        
+        val autoFitConfig = finalStyle.autoFit
+        val shape = boundaryShape
+        
+        if (shape != null) {
+            val bounds = PsdBounds(
+                left = textLeft ?: (if (shapeType == TextShapeType.BOX) 0f else left.toFloat()),
+                top = textTop ?: (if (shapeType == TextShapeType.BOX) 0f else top.toFloat()),
+                right = textRight ?: (if (shapeType == TextShapeType.BOX && boxBounds != null && boxBounds!!.size >= 3) boxBounds!![2] else right.toFloat()),
+                bottom = textBottom ?: (if (shapeType == TextShapeType.BOX && boxBounds != null && boxBounds!!.size >= 4) boxBounds!![3] else bottom.toFloat())
+            )
+            
+            if (autoFitConfig != null) {
+                val newFontSize = TextFormatter.resolveFontSize(finalText, finalStyle, bounds, shape, autoFitConfig, wordBreak, verticalAlignment)
+                finalStyleAfterFit = finalStyle.copy(fontSize = newFontSize)
+            }
+            
+            val formatResult = TextFormatter.formatTextInternal(finalText, finalStyleAfterFit, bounds, shape, wordBreak, verticalAlignment)
+            finalText = formatResult.text
+            val visualHeight = formatResult.visualHeight
+            
+            if (verticalAlignment == VerticalAlignment.CENTER) {
+                val shift = (bounds.height - visualHeight) / 2f
+                if (shift > 0f) {
+                    finalTop += shift
+                    finalBottom -= shift
+                    finalBoxBounds = finalBoxBounds?.clone()
+                    if (finalBoxBounds != null && finalBoxBounds.size >= 4) {
+                        finalBoxBounds[1] += shift
+                        finalBoxBounds[3] -= shift
+                    }
+                }
+            } else if (verticalAlignment == VerticalAlignment.BOTTOM) {
+                val shift = bounds.height - visualHeight
+                if (shift > 0f) {
+                    finalTop += shift
+                    finalBoxBounds = finalBoxBounds?.clone()
+                    if (finalBoxBounds != null && finalBoxBounds.size >= 4) {
+                        finalBoxBounds[1] += shift
+                    }
+                }
+            }
+        }
+
         val textData = LayerTextData(
-            text = text,
-            transform = transform ?: doubleArrayOf(1.0, 0.0, 0.0, 1.0, left.toDouble(), top.toDouble()),
+            text = finalText,
+            transform = finalTransform,
             antiAlias = antiAlias,
             gridding = gridding,
             orientation = orientation,
             shapeType = shapeType,
-            boxBounds = boxBounds,
-            style = finalStyle,
+            boxBounds = finalBoxBounds,
+            style = finalStyleAfterFit,
             paragraphStyle = paragraphStyle,
             styleRuns = styleRuns,
             paragraphStyleRuns = paragraphStyleRuns,
             left = textLeft ?: if (shapeType == TextShapeType.BOX) 0f else null,
-            top = textTop ?: if (shapeType == TextShapeType.BOX) 0f else null,
+            top = if (shapeType == TextShapeType.BOX) finalTop else null,
             right = textRight ?: if (shapeType == TextShapeType.BOX && boxBounds != null && boxBounds!!.size >= 3) boxBounds!![2] else null,
-            bottom = textBottom ?: if (shapeType == TextShapeType.BOX && boxBounds != null && boxBounds!!.size >= 4) boxBounds!![3] else null
+            bottom = if (shapeType == TextShapeType.BOX) finalBottom else null
         )
 
         return Layer(
-            name = name ?: text,
+            name = name ?: finalText,
             top = top,
             left = left,
             bottom = bottom,
@@ -516,6 +572,7 @@ class TextStyleBuilder {
     var hindiNumbers: Boolean? = null
     var kashida: Float? = null
     var diacriticPos: Int? = null
+    var autoFit: AutoFit? = null
 
     /**
      * Sets Font parameters.
@@ -580,7 +637,8 @@ class TextStyleBuilder {
             characterDirection = characterDirection,
             hindiNumbers = hindiNumbers,
             kashida = kashida,
-            diacriticPos = diacriticPos
+            diacriticPos = diacriticPos,
+            autoFit = autoFit
         )
     }
 }

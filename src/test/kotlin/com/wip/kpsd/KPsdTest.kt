@@ -990,5 +990,203 @@ class KPsdTest {
         assertEquals("Texts", readBack.children[1].name)
         assertEquals("Hello Text", readBack.children[1].children!![0].name)
     }
-}
 
+    @Test
+    fun testTextEngineFeaturesGeneration() {
+        val outDir = java.io.File("build/test_psds")
+        outDir.mkdirs()
+
+        val canvasWidth = 1150
+        val canvasHeight = 800
+
+        // Create a background with three ellipses drawn in light gray
+        val bgData = ByteArray(canvasWidth * canvasHeight * 4)
+        for (y in 0 until canvasHeight) {
+            for (x in 0 until canvasWidth) {
+                    var inside1 = false
+                    var inside2 = false
+                    var inside3 = false
+                    
+                    // Ellipse 1: center(400, 250), rx=300, ry=150 (corresponds to [100, 100] to [700, 400])
+                    val dx1 = (x - 400).toDouble() / 300.0
+                    val dy1 = (y - 250).toDouble() / 150.0
+                    if (dx1 * dx1 + dy1 * dy1 <= 1.0) inside1 = true
+                    
+                    // Ellipse 2: center(400, 600), rx=300, ry=150 (corresponds to [100, 450] to [700, 750])
+                    val dx2 = (x - 400).toDouble() / 300.0
+                    val dy2 = (y - 600).toDouble() / 150.0
+                    if (dx2 * dx2 + dy2 * dy2 <= 1.0) inside2 = true
+                    
+                    // Ellipse 3: center(950, 400), rx=150, ry=300 (corresponds to [800, 100] to [1100, 700])
+                    val dx3 = (x - 950).toDouble() / 150.0
+                    val dy3 = (y - 400).toDouble() / 300.0
+                    if (dx3 * dx3 + dy3 * dy3 <= 1.0) inside3 = true
+                    
+                    val c = if (inside1 || inside2 || inside3) 220 else 255
+                    var finalC = c
+                    
+                    // Draw crosshairs
+                    if ((x == 400 && y in 100..400) || (y == 250 && x in 100..700)) finalC = 150
+                    if ((x == 400 && y in 450..750) || (y == 600 && x in 100..700)) finalC = 150
+                    if ((x == 950 && y in 100..700) || (y == 400 && x in 800..1100)) finalC = 150
+                    
+                    val idx = (y * canvasWidth + x) * 4
+                    bgData[idx] = finalC.toByte()     // R
+                    bgData[idx + 1] = finalC.toByte() // G
+                    bgData[idx + 2] = finalC.toByte() // B
+                    bgData[idx + 3] = 255.toByte() // A
+                }
+            }
+        val bgPixelData = PixelData(canvasWidth, canvasHeight, bgData)
+
+        val doc = psd(width = canvasWidth, height = canvasHeight) {
+            layer("Background") {
+                top = 0; left = 0; bottom = canvasHeight; right = canvasWidth
+                imageData = bgPixelData
+            }
+
+            textLayer(textValue = "This is a very long text to test if the AutoFit and WordBreak functionalities actually work when constrained inside a shape.") {
+                name = "Ellipse Bound AutoFit"
+                top = 100; left = 100; bottom = 400; right = 700
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 600f, 300f)
+                
+                boundaryShape = EllipseBoundary(padding = 20f)
+                wordBreak = WordBreak.NONE
+                verticalAlignment = VerticalAlignment.CENTER
+
+                style {
+                    font(name = "ArialMT")
+                    fillColor(0, 0, 0)
+                    autoFit = AutoFit(minSize = 10f, maxSize = 60f)
+                }
+
+                paragraphStyle {
+                    justification = Justification.CENTER
+                }
+            }
+            
+            textLayer(textValue = "Stroked And Shadowed Layer Bounds Test. This text should also automatically scale to fit the bottom ellipse while rendering effects correctly without clipping.") {
+                name = "Layer Bounds Test"
+                top = 450; left = 100; bottom = 750; right = 700
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 600f, 300f)
+                
+                boundaryShape = EllipseBoundary(padding = 20f)
+                wordBreak = WordBreak.NONE
+                verticalAlignment = VerticalAlignment.CENTER
+                
+                style {
+                    font(name = "ArialMT")
+                    fillColor(255, 0, 0)
+                    autoFit = AutoFit(minSize = 10f, maxSize = 48f)
+                }
+                
+                paragraphStyle {
+                    justification = Justification.CENTER
+                }
+                
+                effects {
+                    stroke {
+                        size = UnitsValue(Units.PIXELS, 6f)
+                        position = StrokePosition.OUTSIDE
+                        rgb(0, 0, 0)
+                    }
+                    dropShadow {
+                        distance = UnitsValue(Units.PIXELS, 10f)
+                        size = UnitsValue(Units.PIXELS, 5f)
+                        rgb(0, 0, 0)
+                        opacity = 0.8f
+                    }
+                }
+            }
+
+            textLayer(textValue = "Vertical Balloon Test. This should automatically break characters and auto-fit to be narrow and tall.") {
+                name = "Vertical Balloon Test"
+                top = 100; left = 800; bottom = 700; right = 1100
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 300f, 600f)
+                
+                boundaryShape = EllipseBoundary(padding = 15f)
+                wordBreak = WordBreak.HYPHENATE
+                verticalAlignment = VerticalAlignment.CENTER
+                
+                style {
+                    font(name = "ArialMT")
+                    fillColor(0, 0, 0)
+                    autoFit = AutoFit(minSize = 10f, maxSize = 60f)
+                }
+                
+                paragraphStyle {
+                    justification = Justification.CENTER
+                }
+            }
+        }
+
+        val layerBoundsTest = doc.children.find { it.name == "Layer Bounds Test" }!!
+        val bounds = layerBoundsTest.calculateBounds()
+        println("Calculated Layer Bounds: left=${bounds.left}, top=${bounds.top}, right=${bounds.right}, bottom=${bounds.bottom}")
+
+        val psdBytes = KPsd.write(doc, compress = false)
+        val outFile = java.io.File(outDir, "text_engine_features.psd")
+        outFile.writeBytes(psdBytes)
+        println("Saved generated PSD to ${outFile.absolutePath}")
+    }
+
+    @Test
+    fun testWordBreakOptions() {
+        val outDir = java.io.File("build/test_psds")
+        outDir.mkdirs()
+
+        val doc = psd(width = 900, height = 500) {
+            val bgPixelData = PixelData(900, 500, ByteArray(900 * 500 * 4) { 255.toByte() })
+            layer("Background") {
+                top = 0; left = 0; bottom = 500; right = 900
+                imageData = bgPixelData
+            }
+
+            val testString = "Supercalifragilisticexpialidocious is a very long word that needs breaking."
+
+            // Column 1: NONE
+            textLayer(textValue = testString) {
+                name = "WordBreak NONE"
+                top = 50; left = 50; bottom = 450; right = 250
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 200f, 400f)
+                boundaryShape = RectangleBoundary(padding = 10f)
+                wordBreak = WordBreak.NONE
+                verticalAlignment = VerticalAlignment.TOP
+                style { font(name = "ArialMT"); fontSize = 24f; fillColor(0, 0, 0) }
+            }
+
+            // Column 2: HYPHENATE
+            textLayer(textValue = testString) {
+                name = "WordBreak HYPHENATE"
+                top = 50; left = 350; bottom = 450; right = 550
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 200f, 400f)
+                boundaryShape = RectangleBoundary(padding = 10f)
+                wordBreak = WordBreak.HYPHENATE
+                verticalAlignment = VerticalAlignment.TOP
+                style { font(name = "ArialMT"); fontSize = 24f; fillColor(0, 0, 0) }
+            }
+
+            // Column 3: BREAK_WORD
+            textLayer(textValue = testString) {
+                name = "WordBreak BREAK_WORD"
+                top = 50; left = 650; bottom = 450; right = 850
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 200f, 400f)
+                boundaryShape = RectangleBoundary(padding = 10f)
+                wordBreak = WordBreak.BREAK_WORD
+                verticalAlignment = VerticalAlignment.TOP
+                style { font(name = "ArialMT"); fontSize = 24f; fillColor(0, 0, 0) }
+            }
+        }
+
+        val psdBytes = KPsd.write(doc, compress = false)
+        val outFile = java.io.File(outDir, "word_break_tests.psd")
+        outFile.writeBytes(psdBytes)
+        println("Saved generated PSD to ${outFile.absolutePath}")
+    }
+}
