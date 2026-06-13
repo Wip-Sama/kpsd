@@ -207,7 +207,8 @@ object PsdHelpers {
         val stride = 4 * width
         var ol = 0
         val offsetLength = channels.size * (if (large) 4 else 2) * height
-        val buffer = ByteArray(offsetLength + width * height * 2) // Safe upper bound buffer
+        val buffer = ByteArray(offsetLength + width * height * 4) // Safe upper bound buffer
+        println("BUFFER ALLOCATED WITH SIZE: ${buffer.size}, offsetLength: $offsetLength, w*h*4: ${width*height*4}")
         var o = offsetLength
 
         for (offset in channels) {
