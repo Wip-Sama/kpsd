@@ -12,15 +12,15 @@ import kotlin.math.cos
 object TextFormatter {
 
     // Layout scoring weights. Can be adjusted to tweak text wrapping aesthetics.
-    const val SCORE_WEIGHT_FULLNESS = 1.0f
+    const val SCORE_WEIGHT_FULLNESS = 0.1f
     const val SCORE_PENALTY_SINGLE_WORD = 0.1f
     const val SCORE_PENALTY_HYPHENATION = 0.05f
-    const val SCORE_WEIGHT_FONT_SIZE = 0.5f
+    const val SCORE_WEIGHT_FONT_SIZE = 2.0f
 
     // AWT string width multiplier to compensate for Photoshop's font rendering differences.
     // Set to 1.0f to allow text to perfectly hug the shape boundaries, at the minor risk of
     // Photoshop occasionally rendering words slightly wider than expected.
-    const val AWT_WIDTH_MULTIPLIER = 1.0f
+    const val AWT_WIDTH_MULTIPLIER = 1.05f
 
     private val graphics: Graphics2D by lazy {
         val img = BufferedImage(1, 1, BufferedImage.TYPE_INT_ARGB)
@@ -288,7 +288,7 @@ object TextFormatter {
             if (fitsVertically) {
                 // Combine layout score with a font size bonus
                 val normalizedFontSize = currentSize / autoFit.maxSize
-                val finalScore = result.layoutScore + (normalizedFontSize * 0.5f)
+                val finalScore = result.layoutScore + (normalizedFontSize * SCORE_WEIGHT_FONT_SIZE)
                 
                 if (finalScore > bestScore) {
                     bestScore = finalScore
