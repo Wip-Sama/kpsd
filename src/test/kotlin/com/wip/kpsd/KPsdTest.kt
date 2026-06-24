@@ -633,29 +633,30 @@ class KPsdTest {
             imageData = PixelData(50, 50, imgBytes)
         )
 
-        // Create a text layer
-        val textLayer = Layer(
+        // Create a text layer using TextLayerBuilder to leverage AutoFit
+        val textLayer = TextLayerBuilder(
             name = "My Text Layer",
-            top = 80,
-            left = 10,
-            bottom = 120,
-            right = 190,
-            text = LayerTextData(
-                text = "Hello Inside Folder",
-                shapeType = TextShapeType.BOX,
-                boxBounds = floatArrayOf(0f, 0f, 180f, 40f),
-                transform = doubleArrayOf(1.0, 0.0, 0.0, 1.0, 10.0, 80.0),
-                left = 0f,
-                top = 0f,
-                right = 180f,
-                bottom = 40f,
-                style = TextStyle(
-                    font = Font(name = "AnimeAce2.0BB"),
-                    fontSize = 20f,
-                    fillColor = Rgb(255, 255, 255)
-                )
-            )
-        )
+            text = "Hello Inside Folder"
+        ).apply {
+            top = 80
+            left = 10
+            bottom = 120
+            right = 190
+            shapeType = TextShapeType.BOX
+            boxBounds = floatArrayOf(0f, 0f, 180f, 40f)
+            transform(1.0, 0.0, 0.0, 1.0, 10.0, 80.0)
+            
+            boundaryShape = RectangleBoundary(padding = 0f)
+            wordBreak = WordBreak.HYPHENATE
+            verticalAlignment = VerticalAlignment.CENTER
+            
+            style {
+                font(name = "AnimeAce2.0BB")
+                fontSize = 20f
+                fillColor(255, 255, 255)
+                autoFit = AutoFit(minSize = 8f, maxSize = 20f)
+            }
+        }.build()
 
         // Create an open folder group containing both layers
         val folderLayer = Layer(
@@ -1336,6 +1337,54 @@ class KPsdTest {
 
         val psdBytes = KPsd.write(doc, compress = false)
         val outFile = java.io.File(outDir, "optical_centering_and_padding_tests.psd")
+        outFile.writeBytes(psdBytes)
+        println("Saved generated PSD to ${outFile.absolutePath}")
+    }
+    @Test
+    fun testAutoFitBugReproduction() {
+        val outDir = java.io.File("build/test_psds")
+        outDir.mkdirs()
+
+        val doc = psd(width = 800, height = 400) {
+            val bgPixelData = PixelData(800, 400, ByteArray(800 * 400 * 4) { 200.toByte() })
+            layer("Background") {
+                top = 0; left = 0; bottom = 400; right = 800
+                imageData = bgPixelData
+            }
+
+            // Bug 1: Horizontal Overflow with WordBreak.NONE
+            // This long word cannot be broken, so it should shrink to minSize (10f) instead of staying huge.
+            val overflowString = "Supercalifragilisticexpialidocious_Supercalifragilisticexpialidocious_Supercalifragilisticexpialidocious"
+            textLayer(textValue = overflowString) {
+                name = "WordBreak NONE Overflow"
+                top = 50; left = 50; bottom = 350; right = 350
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 300f, 300f)
+                boundaryShape = EllipseBoundary(padding = 0f)
+                wordBreak = WordBreak.NONE
+                verticalAlignment = VerticalAlignment.CENTER
+                style { font(name = "ArialMT"); fillColor(0, 0, 0); autoFit = AutoFit(minSize = 10f, maxSize = 60f) }
+                paragraphStyle { justification = Justification.CENTER }
+            }
+
+            // Bug 2: Hyphenation Baseline Desync
+            // This string will be hyphenated. Without the fix, the chunks will be checked against the wrong baseline width, causing horizontal overflow.
+            val hyphenationString = "This is a very long string that will trigger the hyphenation logic multiple times and reveal the baseline desynchronization issue if it exists."
+            textLayer(textValue = hyphenationString) {
+                name = "Hyphenation Desync"
+                top = 50; left = 450; bottom = 350; right = 750
+                shapeType = TextShapeType.BOX
+                boxBounds = floatArrayOf(0f, 0f, 300f, 300f)
+                boundaryShape = EllipseBoundary(padding = 0f)
+                wordBreak = WordBreak.HYPHENATE
+                verticalAlignment = VerticalAlignment.CENTER
+                style { font(name = "ArialMT"); fillColor(0, 0, 0); autoFit = AutoFit(minSize = 10f, maxSize = 60f) }
+                paragraphStyle { justification = Justification.CENTER }
+            }
+        }
+
+        val psdBytes = KPsd.write(doc, compress = false)
+        val outFile = java.io.File(outDir, "autofit_bug_reproduction.psd")
         outFile.writeBytes(psdBytes)
         println("Saved generated PSD to ${outFile.absolutePath}")
     }

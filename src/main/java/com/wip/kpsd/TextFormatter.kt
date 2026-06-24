@@ -73,7 +73,8 @@ object TextFormatter {
         val totalHeight: Float,
         val visualHeight: Float,
         val layoutScore: Float,
-        val descent: Float
+        val descent: Float,
+        val fitsHorizontally: Boolean
     )
 
     fun formatTextInternal(
@@ -95,7 +96,7 @@ object TextFormatter {
         if (alignment == VerticalAlignment.TOP) {
             val startBaseline = -(bounds.height / 2f) + metrics.ascent
             val result = doFormat(text, metrics, bounds, shape, wordBreak, startBaseline, leading)
-            return FormatResult(result.text, result.lineCount * leading, result.visualHeight, result.layoutScore, metrics.descent.toFloat())
+            return FormatResult(result.text, result.lineCount * leading, result.visualHeight, result.layoutScore, metrics.descent.toFloat(), result.fitsHorizontally)
         }
 
         var startBaseline = -(bounds.height / 2f) + metrics.ascent
@@ -103,6 +104,7 @@ object TextFormatter {
         var bestTotalHeight = 0f
         var bestVisualHeight = 0f
         var bestLayoutScore = 0f
+        var bestFitsHorizontally = true
 
         for (i in 0 until 5) {
             val result = doFormat(text, metrics, bounds, shape, wordBreak, startBaseline, leading)
@@ -114,6 +116,7 @@ object TextFormatter {
             bestTotalHeight = totalHeight
             bestVisualHeight = visualHeight
             bestLayoutScore = result.layoutScore
+            bestFitsHorizontally = result.fitsHorizontally
             
             val targetStartBaseline = if (alignment == VerticalAlignment.CENTER) {
                 -((lineCount - 1) * leading + metrics.descent - metrics.ascent) / 2f
@@ -129,14 +132,15 @@ object TextFormatter {
             startBaseline = targetStartBaseline
         }
         
-        return FormatResult(bestText, bestTotalHeight, bestVisualHeight, bestLayoutScore, metrics.descent.toFloat())
+        return FormatResult(bestText, bestTotalHeight, bestVisualHeight, bestLayoutScore, metrics.descent.toFloat(), bestFitsHorizontally)
     }
 
     private data class DoFormatResult(
         val text: String,
         val lineCount: Int,
         val visualHeight: Float,
-        val layoutScore: Float
+        val layoutScore: Float,
+        val fitsHorizontally: Boolean
     )
 
     private fun doFormat(
@@ -157,11 +161,17 @@ object TextFormatter {
         var totalAvailableWidth = 0f
         var singleWordLineCount = 0
         var hyphenationCount = 0
+        var fitsHorizontally = true
 
         fun commitLine(line: String, availW: Float) {
             if (line.isNotEmpty()) {
                 lines.add(line)
-                totalUsedWidth += metrics.stringWidth(line).toFloat()
+                val lineWidthNoMult = metrics.stringWidth(line).toFloat()
+                val lineWidth = lineWidthNoMult * AWT_WIDTH_MULTIPLIER
+                if (lineWidth > availW) {
+                    fitsHorizontally = false
+                }
+                totalUsedWidth += lineWidthNoMult
                 totalAvailableWidth += availW
                 if (!line.trim().contains(" ")) {
                     singleWordLineCount++
@@ -188,6 +198,11 @@ object TextFormatter {
             } else {
                 val wordWidth = metrics.stringWidth(word).toFloat() * AWT_WIDTH_MULTIPLIER
                 if (wordWidth > availableWidth && wordBreak != WordBreak.NONE) {
+                    if (currentLine.isNotEmpty()) {
+                        commitLine(currentLine, availableWidth)
+                        currentBaseline += leading
+                        currentLine = ""
+                    }
                     var remainingWord = word
                     while (remainingWord.isNotEmpty()) {
                         val cTopY = currentBaseline - metrics.ascent
@@ -211,13 +226,8 @@ object TextFormatter {
                         val chunk = remainingWord.substring(0, splitIndex)
                         val append = if (wordBreak == WordBreak.HYPHENATE && splitIndex < remainingWord.length) "$chunk-" else chunk
                         
-                        if (currentLine.isNotEmpty()) {
-                            commitLine(currentLine, availableWidth)
-                            currentBaseline += leading
-                        }
                         commitLine(append, availW)
                         currentBaseline += leading
-                        currentLine = ""
                         remainingWord = remainingWord.substring(splitIndex)
                     }
                 } else {
@@ -244,7 +254,7 @@ object TextFormatter {
                           (singleWordLineCount * SCORE_PENALTY_SINGLE_WORD) - 
                           (hyphenationCount * SCORE_PENALTY_HYPHENATION)
 
-        return DoFormatResult(lines.joinToString("\r"), lines.size, visualHeight, layoutScore)
+        return DoFormatResult(lines.joinToString("\r"), lines.size, visualHeight, layoutScore, fitsHorizontally)
     }
 
     /**
@@ -285,7 +295,7 @@ object TextFormatter {
                     shape.getAvailableWidth(topExtremeY, bounds) > 0f &&
                     shape.getAvailableWidth(bottomExtremeY, bounds) > 0f
 
-            if (fitsVertically) {
+            if (fitsVertically && result.fitsHorizontally) {
                 // Combine layout score with a font size bonus
                 val normalizedFontSize = currentSize / autoFit.maxSize
                 val finalScore = result.layoutScore + (normalizedFontSize * SCORE_WEIGHT_FONT_SIZE)
