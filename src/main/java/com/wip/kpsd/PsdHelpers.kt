@@ -67,8 +67,40 @@ object PsdHelpers {
         BlendMode.HUE to "H   ",
         BlendMode.SATURATION to "Strt",
         BlendMode.COLOR to "Clr ",
-        BlendMode.LUMINOSITY to "Lmns"
+        BlendMode.LUMINOSITY to "Lmns",
+        BlendMode.LINEAR_HEIGHT to "linearHeight",
+        BlendMode.HEIGHT to "Hght",
+        BlendMode.SUBTRACTION to "Sbtr"
     )
+
+    /**
+     * Decodes blend mode from either 4-char signature, descriptor enum code,
+     * space-separated name, or Photoshop 2026 camelCase identifier.
+     */
+    fun decodeBlendMode(valStr: String?): BlendMode {
+        if (valStr == null) return BlendMode.NORMAL
+        val trimmed = if (valStr.contains(".")) valStr.substringAfter(".") else valStr
+
+        // 1. Direct match in fromBlendModeDescriptor (e.g. "Nrml", "linearBurn", "Sbtr", "Hght", "linearHeight")
+        fromBlendModeDescriptor.entries.firstOrNull { it.value.equals(trimmed, ignoreCase = true) }?.key?.let { return it }
+
+        // 2. Direct match in toBlendMode (4-char signature, e.g. "norm", "mul ")
+        toBlendMode[trimmed]?.let { return it }
+
+        // 3. String value match in BlendMode enum (e.g. "normal", "color burn", "linear height")
+        BlendMode.entries.firstOrNull { it.value.equals(trimmed, ignoreCase = true) }?.let { return it }
+
+        // 4. CamelCase conversion: "colorBurn" -> "color burn", "linearDodge" -> "linear dodge"
+        val spaced = trimmed.replace(Regex("([a-z])([A-Z])"), "$1 $2").lowercase()
+        BlendMode.entries.firstOrNull { it.value.equals(spaced, ignoreCase = true) }?.let { return it }
+
+        // 5. Enum constant name match
+        try {
+            return BlendMode.valueOf(trimmed.uppercase())
+        } catch (_: Exception) {}
+
+        return BlendMode.NORMAL
+    }
 
     fun clamp(value: Float, min: Float, max: Float): Float {
         return if (value < min) min else if (value > max) max else value
@@ -208,7 +240,6 @@ object PsdHelpers {
         var ol = 0
         val offsetLength = channels.size * (if (large) 4 else 2) * height
         val buffer = ByteArray(offsetLength + width * height * 4) // Safe upper bound buffer
-        println("BUFFER ALLOCATED WITH SIZE: ${buffer.size}, offsetLength: $offsetLength, w*h*4: ${width*height*4}")
         var o = offsetLength
 
         for (offset in channels) {

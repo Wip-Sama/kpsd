@@ -268,6 +268,19 @@ class PsdWriter(initialCapacity: Int = 4096) {
         writeSection(2, writeTotalLength = false, largeSection = large) {
             writeLayerInfo(layers, globalAlpha, compress)
             writeZeros(4) // Empty global layer mask info
+
+            // Document-level additional info (Patterns)
+            psd.patterns?.let { patterns ->
+                if (patterns.isNotEmpty()) {
+                    writeSignature("8BIM")
+                    writeSignature("Patt")
+                    writeSection(4, writeTotalLength = true, largeSection = false) {
+                        for (pattern in patterns) {
+                            writePattern(pattern)
+                        }
+                    }
+                }
+            }
         }
 
         // Composite Image Data
@@ -732,4 +745,86 @@ class PsdWriter(initialCapacity: Int = 4096) {
 
         return LayerChannelData(layer, top, left, bottom, right, channels)
     }
+
+    /**
+     * Serializes a [PatternInfo] block in document-level pattern format.
+     */
+    fun writePattern(pattern: PatternInfo) {
+        val width = pattern.bounds.w
+        val height = pattern.bounds.h
+        val pixelData = PixelData(width, height, pattern.data)
+
+        val pattsOffset = offset
+        writeUint32(0L) // length placeholder, fixed up below
+
+        writeUint32(1L) // version
+        writeUint32(ColorMode.RGB.value.toLong()) // color mode - rgb only
+
+        writeInt16(pattern.x)
+        writeInt16(pattern.y)
+
+        writeUnicodeString(pattern.name + "\u0000") // name
+        writePascalString(pattern.id, 1) // id
+
+        // virtual memory array list
+        writeUint32(3L) // version
+        val vlOffset = offset
+        writeUint32(0L) // length placeholder, fixed up below
+
+        val top = pattern.bounds.y
+        val left = pattern.bounds.x
+        val bottom = top + height
+        val right = left + width
+
+        writeUint32(top.toLong())
+        writeUint32(left.toLong())
+        writeUint32(bottom.toLong())
+        writeUint32(right.toLong())
+
+        writeUint32(24L) // max channels count
+
+        // channels: RGB at indices 0, 1, 2 and alpha at index 25
+        for (i in 0 until (24 + 2)) {
+            val chOffset = if (i < 3) i else if (i == 25) 3 else -1
+
+            if (chOffset < 0) {
+                writeUint32(0L) // has = 0
+                continue
+            }
+
+            // write RLE data for channel (pattern channels always use non-large 2-byte RLE scanline headers)
+            val data = PsdHelpers.writeDataRLE(pixelData, intArrayOf(chOffset), large = false)
+
+            writeUint32(1L) // has = 1
+            writeUint32((data.size + 4 + 16 + 2 + 1).toLong()) // length
+            writeUint32(8L) // pixelDepth
+            writeUint32(top.toLong())
+            writeUint32(left.toLong())
+            writeUint32(bottom.toLong())
+            writeUint32(right.toLong())
+            writeUint16(8) // pixelDepth2
+            writeUint8(1) // compressionMode = RLE
+            writeBytes(data)
+        }
+
+        val vlLength = offset - vlOffset - 4
+        var pattsLength = offset - pattsOffset - 4
+
+        while (pattsLength % 4 != 0) {
+            writeUint8(0)
+            pattsLength++
+        }
+
+        // Fix up lengths in Big-Endian
+        bytes[vlOffset] = ((vlLength shr 24) and 0xff).toByte()
+        bytes[vlOffset + 1] = ((vlLength shr 16) and 0xff).toByte()
+        bytes[vlOffset + 2] = ((vlLength shr 8) and 0xff).toByte()
+        bytes[vlOffset + 3] = (vlLength and 0xff).toByte()
+
+        bytes[pattsOffset] = ((pattsLength shr 24) and 0xff).toByte()
+        bytes[pattsOffset + 1] = ((pattsLength shr 16) and 0xff).toByte()
+        bytes[pattsOffset + 2] = ((pattsLength shr 8) and 0xff).toByte()
+        bytes[pattsOffset + 3] = (pattsLength and 0xff).toByte()
+    }
 }
+

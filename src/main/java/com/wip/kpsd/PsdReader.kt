@@ -4,11 +4,37 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
-class PsdReader(val bytes: ByteArray) {
+class PsdReader(
+    val bytes: ByteArray,
+    val readOptions: ReadOptions = ReadOptions()
+) {
     var offset: Int = 0
     var large: Boolean = false
+    var memoryLimit: Long? = readOptions.totalMemoryLimit
 
     private val byteBuffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+
+    fun consumeMemory(size: Long) {
+        if (memoryLimit != null) {
+            if (memoryLimit!! < size) {
+                throw IllegalStateException("Exceeded memory limit")
+            }
+            memoryLimit = memoryLimit!! - size
+        }
+    }
+
+    fun recoverMemory(size: Long) {
+        if (memoryLimit != null) {
+            memoryLimit = memoryLimit!! + size
+        }
+    }
+
+    fun isValidBoxSize(top: Int, left: Int, bottom: Int, right: Int, large: Boolean): Boolean {
+        val width = right - left
+        val height = bottom - top
+        val maxSize = if (large) 300000 else 30000
+        return width in 0..maxSize && height in 0..maxSize
+    }
 
     fun readUint8(): Int {
         return bytes[offset++].toInt() and 0xff
@@ -162,10 +188,21 @@ class PsdReader(val bytes: ByteArray) {
         }
 
         // layer and mask info
-        readSection(2, eightBytes = large) {
+        readSection(2, eightBytes = large) { left ->
             readLayerInfo(psd)
-            readGlobalLayerMaskInfo()
-            // readAdditionalLayerInfo(psd, psd)
+            if (left() > 0) {
+                readGlobalLayerMaskInfo()
+            }
+            while (left() > 0) {
+                while (left() > 0 && peekUint8() == 0) {
+                    skipBytes(1)
+                }
+                if (left() >= 12) {
+                    readAdditionalLayerInfo(psd, psd)
+                } else {
+                    skipBytes(left())
+                }
+            }
         }
 
         // composite image data
@@ -231,6 +268,10 @@ class PsdReader(val bytes: ByteArray) {
         val left = readInt32()
         val bottom = readInt32()
         val right = readInt32()
+        if (!isValidBoxSize(top, left, bottom, right, large)) {
+            throw IllegalStateException("Invalid layer size: [$top, $left, $bottom, $right]")
+        }
+
         val channelsCount = readInt16()
         val info = mutableListOf<ChannelInfo>()
         for (i in 0 until channelsCount) {
@@ -251,7 +292,7 @@ class PsdReader(val bytes: ByteArray) {
             left = left,
             bottom = bottom,
             right = right,
-            blendMode = PsdHelpers.toBlendMode[blendMode] ?: BlendMode.NORMAL,
+            blendMode = PsdHelpers.decodeBlendMode(blendMode),
             opacity = opacity,
             hidden = (flags and 0x02) != 0,
             transparencyProtected = (flags and 0x01) != 0,
@@ -279,6 +320,9 @@ class PsdReader(val bytes: ByteArray) {
                 mask.left = readInt32()
                 mask.bottom = readInt32()
                 mask.right = readInt32()
+                if (!isValidBoxSize(mask.top ?: 0, mask.left ?: 0, mask.bottom ?: 0, mask.right ?: 0, large)) {
+                    throw IllegalStateException("Invalid mask size")
+                }
                 mask.defaultColor = readUint8()
                 val flags = readUint8()
                 mask.positionRelativeToLayer = (flags and 1) != 0
@@ -298,6 +342,9 @@ class PsdReader(val bytes: ByteArray) {
                     realMask.left = readInt32()
                     realMask.bottom = readInt32()
                     realMask.right = readInt32()
+                    if (!isValidBoxSize(realMask.top ?: 0, realMask.left ?: 0, realMask.bottom ?: 0, realMask.right ?: 0, large)) {
+                        throw IllegalStateException("Invalid real mask size")
+                    }
                     layer.realMask = realMask
                 }
                 
@@ -333,10 +380,178 @@ class PsdReader(val bytes: ByteArray) {
         }
     }
 
+    fun readPattern(): PatternInfo {
+        var length = readUint32().toInt()
+        while (length % 4 != 0) length++
+        val end = offset + length
+        val version = readUint32()
+        if (version != 1L) {
+            throw IllegalStateException("Invalid pattern version: $version")
+        }
+
+        val colorModeValue = readUint32().toInt()
+        val colorMode = ColorMode.fromInt(colorModeValue)
+        val x = readInt16()
+        val y = readInt16()
+
+        if (colorMode != ColorMode.RGB && colorMode != ColorMode.Grayscale && colorMode != ColorMode.Indexed) {
+            throw IllegalStateException("Unsupported pattern color mode: $colorMode")
+        }
+
+        val name = readUnicodeString()
+        val id = readPascalString(1)
+        val palette = mutableListOf<Rgb>()
+
+        if (colorMode == ColorMode.Indexed) {
+            for (i in 0 until 256) {
+                palette.add(
+                    Rgb(
+                        r = readUint8(),
+                        g = readUint8(),
+                        b = readUint8()
+                    )
+                )
+            }
+            skipBytes(4)
+        }
+
+        // virtual memory array list
+        val version2 = readUint32()
+        if (version2 != 3L) {
+            throw IllegalStateException("Invalid pattern VMAL version: $version2")
+        }
+
+        readUint32() // length
+        val top = readUint32().toInt()
+        val left = readUint32().toInt()
+        val bottom = readUint32().toInt()
+        val right = readUint32().toInt()
+        val channelsCount = readUint32().toInt()
+        val width = right - left
+        val height = bottom - top
+        val size = width * height * 4
+        consumeMemory(size.toLong())
+        val data = ByteArray(size) { if (it % 4 == 3) 255.toByte() else 0 }
+
+        var ch = 0
+        for (i in 0 until (channelsCount + 2)) {
+            val has = readUint32()
+            if (has == 0L) continue
+
+            val chLength = readUint32().toInt()
+            val pixelDepth = readUint32().toInt()
+            val ctop = readUint32().toInt()
+            val cleft = readUint32().toInt()
+            val cbottom = readUint32().toInt()
+            val cright = readUint32().toInt()
+            val pixelDepth2 = readUint16()
+            val compressionMode = readUint8() // 0 - raw, 1 - rle
+            val dataLength = chLength - (4 + 16 + 2 + 1)
+            val cdata = readBytes(dataLength)
+
+            if (pixelDepth != 8 || pixelDepth2 != 8) {
+                throw IllegalStateException("16bit pixel depth not supported for patterns")
+            }
+
+            val w = cright - cleft
+            val h = cbottom - ctop
+            val ox = cleft - left
+            val oy = ctop - top
+            val targetOffset = if (i == 25) 3 else if (ch < 3) ch else -1
+
+            if (compressionMode == 0) {
+                if (colorMode == ColorMode.RGB && targetOffset >= 0) {
+                    for (cy in 0 until h) {
+                        for (cx in 0 until w) {
+                            val src = cx + cy * w
+                            val dst = (ox + cx + (cy + oy) * width) * 4
+                            if (src < cdata.size && dst + targetOffset < data.size) {
+                                data[dst + targetOffset] = cdata[src]
+                            }
+                        }
+                    }
+                } else if (colorMode == ColorMode.Grayscale && ch < 1) {
+                    for (cy in 0 until h) {
+                        for (cx in 0 until w) {
+                            val src = cx + cy * w
+                            val dst = (ox + cx + (cy + oy) * width) * 4
+                            if (src < cdata.size && dst + 2 < data.size) {
+                                val value = cdata[src]
+                                data[dst + 0] = value
+                                data[dst + 1] = value
+                                data[dst + 2] = value
+                            }
+                        }
+                    }
+                } else if (colorMode == ColorMode.Indexed) {
+                    for (cy in 0 until h) {
+                        for (cx in 0 until w) {
+                            val src = cx + cy * w
+                            val dst = (ox + cx + (cy + oy) * width) * 4
+                            if (src < cdata.size && dst + 2 < data.size) {
+                                val idx = cdata[src].toInt() and 0xff
+                                val color = if (idx < palette.size) palette[idx] else Rgb(0, 0, 0)
+                                data[dst + 0] = color.r.toByte()
+                                data[dst + 1] = color.g.toByte()
+                                data[dst + 2] = color.b.toByte()
+                            }
+                        }
+                    }
+                }
+            } else if (compressionMode == 1) {
+                consumeMemory((w * h).toLong())
+                val cdataReader = PsdReader(cdata)
+                cdataReader.large = false
+                val rowCounts = IntArray(h)
+                for (cy in 0 until h) {
+                    rowCounts[cy] = cdataReader.readUint16()
+                }
+                val tempPixelData = PixelData(w, h, ByteArray(w * h * 4))
+                PsdHelpers.readDataRLE(rowCounts, cdata, cdataReader.offset, tempPixelData, w, h, 1, intArrayOf(0))
+
+                if (colorMode == ColorMode.RGB && targetOffset >= 0) {
+                    for (cy in 0 until h) {
+                        for (cx in 0 until w) {
+                            val src = (cx + cy * w) * 1
+                            val dst = (ox + cx + (cy + oy) * width) * 4
+                            if (src < tempPixelData.data.size && dst + targetOffset < data.size) {
+                                data[dst + targetOffset] = tempPixelData.data[src]
+                            }
+                        }
+                    }
+                } else if (colorMode == ColorMode.Grayscale && ch < 1) {
+                    for (cy in 0 until h) {
+                        for (cx in 0 until w) {
+                            val src = (cx + cy * w) * 1
+                            val dst = (ox + cx + (cy + oy) * width) * 4
+                            if (src < tempPixelData.data.size && dst + 2 < data.size) {
+                                val value = tempPixelData.data[src]
+                                data[dst + 0] = value
+                                data[dst + 1] = value
+                                data[dst + 2] = value
+                            }
+                        }
+                    }
+                }
+                recoverMemory((w * h).toLong())
+            }
+            ch++
+        }
+
+        offset = end
+        return PatternInfo(
+            id = id,
+            name = name,
+            x = x,
+            y = y,
+            bounds = PatternBounds(x = left, y = top, w = width, h = height),
+            data = data
+        )
+    }
+
     fun readAdditionalLayerInfo(psd: Psd, target: Any) {
         val sig = readSignature()
         if (sig != "8BIM" && sig != "8B64") {
-            // println("Invalid signature at $offset: $sig")
             throw IllegalStateException("Invalid signature: '$sig' in additional layer info at $offset")
         }
         val key = readSignature()
@@ -345,7 +560,14 @@ class PsdReader(val bytes: ByteArray) {
         val sectionLen = if (u64) readUint64().toInt() else readInt32()
         val sectionEnd = offset + sectionLen
 
-        if (key == "TySh" && target is Layer) {
+        if (key in listOf("Patt", "Pat2", "Pat3")) {
+            val patternList = (target as? Psd)?.patterns ?: mutableListOf<PatternInfo>().also {
+                if (target is Psd) target.patterns = it
+            }
+            while (sectionEnd - offset > 0) {
+                patternList.add(readPattern())
+            }
+        } else if (key == "TySh" && target is Layer) {
             val version = readInt16()
             if (version != 1) throw IllegalStateException("Invalid TySh version: $version at $offset")
 
@@ -391,7 +613,6 @@ class PsdReader(val bytes: ByteArray) {
             
             target.text = textLayout
         } else if ((key == "lfx2" || key == "lmfx") && target is Layer) {
-            // Effects
             if (key == "lfx2") skipBytes(4) // version
             val desc = PsdDescriptor.readVersionAndDescriptor(this)
             target.effects = parseEffectsDescriptor(desc)
@@ -449,7 +670,7 @@ class PsdReader(val bytes: ByteArray) {
             else -> StrokeFillType.COLOR
         }
         val blendModeVal = (s.properties["Md  "] as? EnumValue)?.value ?: "Nrml"
-        val blendMode = PsdHelpers.fromBlendModeDescriptor.entries.firstOrNull { it.value == blendModeVal }?.key ?: BlendMode.NORMAL
+        val blendMode = PsdHelpers.decodeBlendMode(blendModeVal)
         val opacity = (s.properties["Opct"] as? UnitDoubleValue)?.value?.div(100.0f)?.toFloat() ?: 1.0f
         val sizeVal = s.properties["Sz  "] as? UnitDoubleValue
         val size = UnitsValue(Units.fromString(sizeVal?.units ?: "Pixels"), sizeVal?.value?.toFloat() ?: 1.0f)
@@ -469,7 +690,7 @@ class PsdReader(val bytes: ByteArray) {
     private fun parseShadowDescriptor(s: DescriptorStructure): LayerEffectShadow {
         val enabled = (s.properties["enab"] as? BooleanValue)?.value ?: true
         val blendModeVal = (s.properties["Md  "] as? EnumValue)?.value ?: "Nrml"
-        val blendMode = PsdHelpers.fromBlendModeDescriptor.entries.firstOrNull { it.value == blendModeVal }?.key ?: BlendMode.MULTIPLY
+        val blendMode = PsdHelpers.decodeBlendMode(blendModeVal)
         val color = s.properties["Clr "]?.let { parseColorDescriptor(it as DescriptorStructure) }
         val opacity = (s.properties["Opct"] as? UnitDoubleValue)?.value?.div(100.0f)?.toFloat() ?: 1.0f
         val useGlobalLight = (s.properties["uglg"] as? BooleanValue)?.value ?: true
@@ -523,12 +744,34 @@ class PsdReader(val bytes: ByteArray) {
         val height = layer.bottom - layer.top
 
         if (width <= 0 || height <= 0) {
-            // skip channel data for empty layers
             for (c in info) {
                 skipBytes(c.length)
             }
             return
         }
+
+        if (readOptions.useRawData) {
+            val rawChannels = mutableListOf<RawChannelData>()
+            for (c in info) {
+                if (c.length <= 0) {
+                    rawChannels.add(RawChannelData(c.id, Compression.RawData, ByteArray(0)))
+                    continue
+                }
+                val compressionValue = readInt16()
+                val compression = Compression.fromInt(compressionValue)
+                val chData = readBytes(c.length - 2)
+                rawChannels.add(RawChannelData(c.id, compression, chData))
+            }
+            layer.rawData = RawLayerData(
+                colorMode = psd.colorMode,
+                bitsPerChannel = psd.bitsPerChannel,
+                channels = rawChannels,
+                large = large
+            )
+            return
+        }
+
+        consumeMemory((width * height * 4).toLong())
 
         val channelData = mutableMapOf<ChannelID, ByteArray>()
         for (c in info) {
@@ -587,18 +830,31 @@ class PsdReader(val bytes: ByteArray) {
 
     private fun readGlobalLayerMaskInfo(): GlobalLayerMaskInfo? {
         return readSection(2) {
-            // skip for now
             null
         }
     }
 
     private fun readCompositeImageData(psd: Psd) {
-        val compressionValue = readInt16()
-        val compression = Compression.fromInt(compressionValue)
+        if (offset >= bytes.size) return
+
+        if (readOptions.useRawData) {
+            psd.rawCompositeData = bytes.copyOfRange(offset, bytes.size)
+            return
+        }
+
+        if (readOptions.skipCompositeImageData) {
+            return
+        }
 
         val width = psd.width
         val height = psd.height
         val channels = psd.channels
+        if (width <= 0 || height <= 0) return
+
+        consumeMemory((width * height * 4).toLong())
+
+        val compressionValue = readInt16()
+        val compression = Compression.fromInt(compressionValue)
 
         if (compression == Compression.RleCompressed) {
             val rowCounts = IntArray(height * channels)
@@ -626,5 +882,185 @@ class PsdReader(val bytes: ByteArray) {
         val v = byteBuffer.getLong(offset)
         offset += 8
         return v
+    }
+
+    companion object {
+        fun decodeChannelData(
+            channels: List<RawChannelData>,
+            width: Int,
+            height: Int,
+            large: Boolean,
+            forMask: Boolean = false
+        ): ByteArray {
+            val channelData = mutableMapOf<ChannelID, ByteArray>()
+            for (c in channels) {
+                val data = c.data
+                if (data.isEmpty()) {
+                    channelData[c.id] = ByteArray(width * height)
+                    continue
+                }
+                when (c.compression) {
+                    Compression.RleCompressed -> {
+                        val reader = PsdReader(data)
+                        reader.large = large
+                        val rowCounts = IntArray(height)
+                        for (y in 0 until height) {
+                            rowCounts[y] = if (large) reader.readInt32() else reader.readInt16()
+                        }
+                        val pixelData = PixelData(width, height, ByteArray(width * height * 4))
+                        PsdHelpers.readDataRLE(rowCounts, data, reader.offset, pixelData, width, height, 1, intArrayOf(0))
+                        channelData[c.id] = pixelData.data.sliceArray(0 until width * height)
+                    }
+                    Compression.ZipWithoutPrediction, Compression.ZipWithPrediction -> {
+                        val pixelData = PixelData(width, height, ByteArray(width * height))
+                        PsdHelpers.readDataZip(
+                            compressed = data,
+                            pixelData = pixelData,
+                            width = width,
+                            height = height,
+                            bitDepth = 8,
+                            step = 1,
+                            offset = 0,
+                            prediction = c.compression == Compression.ZipWithPrediction
+                        )
+                        channelData[c.id] = pixelData.data
+                    }
+                    else -> {
+                        channelData[c.id] = data
+                    }
+                }
+            }
+
+            if (forMask) {
+                val maskBytes = channelData[ChannelID.UserMask] ?: channelData[ChannelID.RealUserMask] ?: ByteArray(width * height)
+                val pixels = ByteArray(width * height * 4)
+                for (i in 0 until width * height) {
+                    val base = i * 4
+                    val v = maskBytes[i]
+                    pixels[base] = v
+                    pixels[base + 1] = v
+                    pixels[base + 2] = v
+                    pixels[base + 3] = 255.toByte()
+                }
+                return pixels
+            }
+
+            val r = channelData[ChannelID.Color0] ?: ByteArray(width * height)
+            val g = channelData[ChannelID.Color1] ?: ByteArray(width * height)
+            val b = channelData[ChannelID.Color2] ?: ByteArray(width * height)
+            val a = channelData[ChannelID.Transparency] ?: ByteArray(width * height) { 255.toByte() }
+
+            val pixels = ByteArray(width * height * 4)
+            for (i in 0 until width * height) {
+                val base = i * 4
+                pixels[base] = r[i]
+                pixels[base + 1] = g[i]
+                pixels[base + 2] = b[i]
+                pixels[base + 3] = a[i]
+            }
+            return pixels
+        }
+
+        fun getLayerImageData(layer: Layer, memoryLimit: Long? = null): PixelData? {
+            val raw = layer.rawData ?: return layer.imageData
+            val width = layer.right - layer.left
+            val height = layer.bottom - layer.top
+            if (width <= 0 || height <= 0) return null
+
+            val size = width.toLong() * height * 4
+            if (memoryLimit != null && size > memoryLimit) throw IllegalStateException("Exceeded memory limit")
+
+            val pixels = decodeChannelData(raw.channels, width, height, raw.large, forMask = false)
+            return PixelData(width, height, pixels)
+        }
+
+        fun getLayerMaskImageData(layer: Layer, memoryLimit: Long? = null): PixelData? {
+            val mask = layer.mask ?: return null
+            if (mask.imageData != null) return mask.imageData
+            val raw = layer.rawData ?: return null
+            val width = (mask.right ?: 0) - (mask.left ?: 0)
+            val height = (mask.bottom ?: 0) - (mask.top ?: 0)
+            if (width <= 0 || height <= 0) return null
+
+            val maskChannels = raw.channels.filter { it.id == ChannelID.UserMask }
+            if (maskChannels.isEmpty()) return null
+
+            val size = width.toLong() * height * 4
+            if (memoryLimit != null && size > memoryLimit) throw IllegalStateException("Exceeded memory limit")
+
+            val pixels = decodeChannelData(maskChannels, width, height, raw.large, forMask = true)
+            return PixelData(width, height, pixels)
+        }
+
+        fun getLayerRealMaskImageData(layer: Layer, memoryLimit: Long? = null): PixelData? {
+            val realMask = layer.realMask ?: return null
+            if (realMask.imageData != null) return realMask.imageData
+            val raw = layer.rawData ?: return null
+            val width = (realMask.right ?: 0) - (realMask.left ?: 0)
+            val height = (realMask.bottom ?: 0) - (realMask.top ?: 0)
+            if (width <= 0 || height <= 0) return null
+
+            val maskChannels = raw.channels.filter { it.id == ChannelID.RealUserMask }
+            if (maskChannels.isEmpty()) return null
+
+            val size = width.toLong() * height * 4
+            if (memoryLimit != null && size > memoryLimit) throw IllegalStateException("Exceeded memory limit")
+
+            val pixels = decodeChannelData(maskChannels, width, height, raw.large, forMask = true)
+            return PixelData(width, height, pixels)
+        }
+
+        fun decodeLayerPixels(layer: Layer, memoryLimit: Long? = null) {
+            val imgData = getLayerImageData(layer, memoryLimit)
+            if (imgData != null) layer.imageData = imgData
+
+            val maskData = getLayerMaskImageData(layer, memoryLimit)
+            if (maskData != null) {
+                if (layer.mask == null) layer.mask = LayerMaskData()
+                layer.mask!!.imageData = maskData
+            }
+
+            val realMaskData = getLayerRealMaskImageData(layer, memoryLimit)
+            if (realMaskData != null) {
+                if (layer.realMask == null) layer.realMask = LayerMaskData()
+                layer.realMask!!.imageData = realMaskData
+            }
+
+            layer.rawData = null
+        }
+
+        fun getCompositeImageData(psd: Psd, memoryLimit: Long? = null): PixelData? {
+            val raw = psd.rawCompositeData ?: return psd.imageData
+            val width = psd.width
+            val height = psd.height
+            val channels = psd.channels
+            if (width <= 0 || height <= 0) return null
+
+            val size = width.toLong() * height * 4
+            if (memoryLimit != null && size > memoryLimit) throw IllegalStateException("Exceeded memory limit")
+
+            val reader = PsdReader(raw)
+            reader.large = psd.bitsPerChannel == 16 || psd.width > 30000 || psd.height > 30000
+            val compressionValue = reader.readInt16()
+            val compression = Compression.fromInt(compressionValue)
+
+            if (compression == Compression.RleCompressed) {
+                val rowCounts = IntArray(height * channels)
+                for (i in 0 until height * channels) {
+                    rowCounts[i] = if (reader.large) reader.readInt32() else reader.readInt16()
+                }
+                val pixelData = PixelData(width, height, ByteArray(width * height * 4))
+                val channelOffsets = IntArray(channels) { it }
+                PsdHelpers.readDataRLE(rowCounts, raw, reader.offset, pixelData, width, height, 4, channelOffsets)
+                return pixelData
+            } else {
+                val pixelData = PixelData(width, height, ByteArray(width * height * 4))
+                for (c in 0 until channels) {
+                    val channel = reader.readBytes(width * height)
+                    PsdHelpers.copyChannelToPixelData(pixelData, channel, c, 4)
+                }
+                return pixelData
+            }
+        }
     }
 }

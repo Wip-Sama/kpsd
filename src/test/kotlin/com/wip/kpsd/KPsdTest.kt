@@ -1388,4 +1388,260 @@ class KPsdTest {
         outFile.writeBytes(psdBytes)
         println("Saved generated PSD to ${outFile.absolutePath}")
     }
+
+    @Test
+    fun testPatternRoundtrip() {
+        val w = 5
+        val h = 3
+        val data = ByteArray(w * h * 4)
+        for (i in 0 until (w * h)) {
+            data[i * 4 + 0] = (i * 10).toByte()
+            data[i * 4 + 1] = (i * 5).toByte()
+            data[i * 4 + 2] = (i * 2).toByte()
+            data[i * 4 + 3] = 255.toByte()
+        }
+        val pattern = PatternInfo(
+            id = "abc123",
+            name = "mypat",
+            x = 1,
+            y = 2,
+            bounds = PatternBounds(x = 0, y = 0, w = w, h = h),
+            data = data
+        )
+
+        val writer = PsdWriter()
+        writer.writePattern(pattern)
+        val buffer = writer.getWriterBuffer()
+
+        val reader = PsdReader(buffer)
+        val result = reader.readPattern()
+
+        assertEquals(pattern.id, result.id)
+        assertEquals(pattern.name, result.name)
+        assertEquals(pattern.x, result.x)
+        assertEquals(pattern.y, result.y)
+        assertEquals(pattern.bounds, result.bounds)
+        assertTrue(pattern.data.contentEquals(result.data))
+    }
+
+    @Test
+    fun testPatternDocumentRoundtrip() {
+        val w = 4
+        val h = 4
+        val patData = ByteArray(w * h * 4) { (it * 7).toByte() }
+        val pattern = PatternInfo(
+            id = "doc-pat-1",
+            name = "DocPattern",
+            x = 0,
+            y = 0,
+            bounds = PatternBounds(0, 0, w, h),
+            data = patData
+        )
+
+        val psd = Psd(
+            width = 100,
+            height = 100,
+            children = mutableListOf(Layer(name = "Layer 1", top = 0, left = 0, bottom = 100, right = 100)),
+            patterns = mutableListOf(pattern)
+        )
+
+        val bytes = KPsd.write(psd)
+        val readPsd = KPsd.read(bytes)
+
+        assertNotNull(readPsd.patterns)
+        assertEquals(1, readPsd.patterns!!.size)
+        val p = readPsd.patterns!![0]
+        assertEquals("doc-pat-1", p.id)
+        assertEquals("DocPattern", p.name)
+        assertEquals(w, p.bounds.w)
+        assertEquals(h, p.bounds.h)
+        assertTrue(patData.contentEquals(p.data))
+    }
+
+    @Test
+    fun testPatternFromAgPsdFile() {
+        val patternPsdFile = File("ag-psd/test/read/pattern/src.psd")
+        if (patternPsdFile.exists()) {
+            val psd = KPsd.read(patternPsdFile.readBytes())
+            assertEquals(200, psd.width)
+            assertEquals(200, psd.height)
+            assertNotNull(psd.patterns)
+            assertTrue(psd.patterns!!.isNotEmpty())
+            val pat = psd.patterns!![0]
+            assertEquals("1b29876b-58b7-11d4-b895-a898787104c1", pat.id)
+            assertEquals("$$$/Presets/Patterns/Patterns_pat/TieDye=Tie Dye", pat.name)
+            assertEquals(64, pat.bounds.w)
+            assertEquals(64, pat.bounds.h)
+        }
+    }
+
+    @Test
+    fun testPhotoshop2026BlendModesFile() {
+        val blendModesFile = File("ag-psd/test/read/2026-blend-modes/src.psd")
+        if (blendModesFile.exists()) {
+            val psd = KPsd.read(blendModesFile.readBytes())
+            assertEquals(600, psd.width)
+            assertEquals(500, psd.height)
+            assertEquals(29, psd.children.size)
+
+            val bgLayer = psd.children.firstOrNull { it.name == "Background" }
+            assertNotNull(bgLayer)
+            assertEquals(BlendMode.NORMAL, bgLayer.blendMode)
+
+            val subtractLayer = psd.children.firstOrNull { it.name == "subtract" }
+            assertNotNull(subtractLayer)
+            assertEquals(BlendMode.SUBTRACT, subtractLayer.blendMode)
+
+            val colorBurnLayer = psd.children.firstOrNull { it.name == "color burn" }
+            assertNotNull(colorBurnLayer)
+            assertEquals(BlendMode.COLOR_BURN, colorBurnLayer.blendMode)
+
+            val linearDodgeLayer = psd.children.firstOrNull { it.name == "linear dodge" }
+            assertNotNull(linearDodgeLayer)
+            assertEquals(BlendMode.LINEAR_DODGE, linearDodgeLayer.blendMode)
+        }
+    }
+
+    @Test
+    fun testPhotoshop2026EnumDecoding() {
+        assertEquals(BlendMode.NORMAL, PsdHelpers.decodeBlendMode("BlnM.normal"))
+        assertEquals(BlendMode.MULTIPLY, PsdHelpers.decodeBlendMode("BlnM.multiply"))
+        assertEquals(BlendMode.COLOR_BURN, PsdHelpers.decodeBlendMode("BlnM.colorBurn"))
+        assertEquals(BlendMode.LINEAR_DODGE, PsdHelpers.decodeBlendMode("BlnM.linearDodge"))
+        assertEquals(BlendMode.LINEAR_HEIGHT, PsdHelpers.decodeBlendMode("BlnM.linearHeight"))
+        assertEquals(BlendMode.HEIGHT, PsdHelpers.decodeBlendMode("BlnM.Hght"))
+        assertEquals(BlendMode.SUBTRACTION, PsdHelpers.decodeBlendMode("BlnM.Sbtr"))
+        assertEquals(BlendMode.NORMAL, PsdHelpers.decodeBlendMode("Nrml"))
+        assertEquals(BlendMode.MULTIPLY, PsdHelpers.decodeBlendMode("Mltp"))
+        assertEquals(BlendMode.COLOR_BURN, PsdHelpers.decodeBlendMode("CBrn"))
+    }
+
+    @Test
+    fun testUseRawDataAndDeferredDecoding() {
+        val width = 50
+        val height = 50
+        val data = ByteArray(width * height * 4) { (it * 3).toByte() }
+        val layer = Layer(
+            name = "Test Layer",
+            top = 0,
+            left = 0,
+            bottom = height,
+            right = width,
+            imageData = PixelData(width, height, data)
+        )
+        val originalPsd = Psd(width = width, height = height, children = mutableListOf(layer))
+        val psdBytes = KPsd.write(originalPsd)
+
+        // Read with useRawData = true
+        val lazyPsd = KPsd.read(psdBytes, ReadOptions(useRawData = true))
+        val lazyLayer = lazyPsd.children[0]
+        assertEquals(null, lazyLayer.imageData)
+        assertNotNull(lazyLayer.rawData)
+        assertNotNull(lazyPsd.rawCompositeData)
+
+        // Now lazily decode pixels
+        KPsd.decodeLayerPixels(lazyLayer)
+        assertNotNull(lazyLayer.imageData)
+        assertEquals(null, lazyLayer.rawData)
+        assertEquals(width, lazyLayer.imageData!!.width)
+        assertEquals(height, lazyLayer.imageData!!.height)
+        assertTrue(data.contentEquals(lazyLayer.imageData!!.data))
+
+        // Decode composite image
+        val compData = KPsd.getCompositeImageData(lazyPsd)
+        assertNotNull(compData)
+        assertEquals(width, compData.width)
+        assertEquals(height, compData.height)
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun testMemoryLimitExceeded() {
+        val width = 200
+        val height = 200
+        val data = ByteArray(width * height * 4) { 100.toByte() }
+        val psd = Psd(width = width, height = height, children = mutableListOf(Layer(top = 0, left = 0, bottom = height, right = width, imageData = PixelData(width, height, data))))
+        val bytes = KPsd.write(psd)
+
+        // Setting a very small memory limit (100 bytes) should throw
+        KPsd.read(bytes, ReadOptions(totalMemoryLimit = 100L))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun testInvalidBoxSize() {
+        val reader = PsdReader(ByteArray(100))
+        if (!reader.isValidBoxSize(10, 20, 5, 15, false)) {
+            throw IllegalStateException("Invalid layer size")
+        }
+    }
+
+    @Test
+    fun testBufferedImageConversion() {
+        val w = 10
+        val h = 10
+        val data = ByteArray(w * h * 4)
+        for (i in 0 until (w * h)) {
+            data[i * 4 + 0] = 120.toByte()
+            data[i * 4 + 1] = 60.toByte()
+            data[i * 4 + 2] = 30.toByte()
+            data[i * 4 + 3] = 200.toByte()
+        }
+        val pixelData = PixelData(w, h, data)
+        val img = KPsd.pixelDataToBufferedImage(pixelData)
+        assertNotNull(img)
+        val back = KPsd.bufferedImageToPixelData(img)
+        assertEquals(w, back.width)
+        assertEquals(h, back.height)
+        assertTrue(pixelData.data.contentEquals(back.data))
+    }
+
+    @Test
+    fun testLazyCanvasDecoding() {
+        val width = 20
+        val height = 20
+        val data = ByteArray(width * height * 4) { 200.toByte() }
+        val layer = Layer(
+            name = "Canvas Layer",
+            top = 0, left = 0, bottom = height, right = width,
+            imageData = PixelData(width, height, data),
+            mask = LayerMaskData(top = 0, left = 0, bottom = height, right = width, imageData = PixelData(width, height, ByteArray(width * height * 4) { 128.toByte() }))
+        )
+        val psd = Psd(width = width, height = height, children = mutableListOf(layer))
+        val bytes = KPsd.write(psd)
+
+        val lazyPsd = KPsd.read(bytes, ReadOptions(useRawData = true))
+        val lazyLayer = lazyPsd.children[0]
+
+        val layerCanvas = KPsd.getLayerCanvas(lazyLayer)
+        assertNotNull(layerCanvas)
+        assertEquals(width, layerCanvas.width)
+        assertEquals(height, layerCanvas.height)
+
+        val compCanvas = KPsd.getCompositeCanvas(lazyPsd)
+        assertNotNull(compCanvas)
+        assertEquals(width, compCanvas.width)
+        assertEquals(height, compCanvas.height)
+    }
+
+    @Test
+    fun testMultiplePatternsRoundtrip() {
+        val p1 = PatternInfo("id1", "Pattern 1", 0, 0, PatternBounds(0, 0, 8, 8), ByteArray(8 * 8 * 4) { 50.toByte() })
+        val p2 = PatternInfo("id2", "Pattern 2", 2, 3, PatternBounds(2, 3, 16, 16), ByteArray(16 * 16 * 4) { 100.toByte() })
+        val psd = Psd(
+            width = 100,
+            height = 100,
+            children = mutableListOf(Layer(top = 0, left = 0, bottom = 100, right = 100)),
+            patterns = mutableListOf(p1, p2)
+        )
+        val bytes = KPsd.write(psd)
+        val read = KPsd.read(bytes)
+
+        assertNotNull(read.patterns)
+        assertEquals(2, read.patterns!!.size)
+        assertEquals("id1", read.patterns!![0].id)
+        assertEquals("Pattern 1", read.patterns!![0].name)
+        assertEquals("id2", read.patterns!![1].id)
+        assertEquals("Pattern 2", read.patterns!![1].name)
+        assertTrue(p1.data.contentEquals(read.patterns!![0].data))
+        assertTrue(p2.data.contentEquals(read.patterns!![1].data))
+    }
 }

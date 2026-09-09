@@ -153,7 +153,13 @@ enum class BlendMode(val value: String) {
     /** Color blend mode. */
     COLOR("color"),
     /** Luminosity blend mode. */
-    LUMINOSITY("luminosity");
+    LUMINOSITY("luminosity"),
+    /** Linear height blend mode. */
+    LINEAR_HEIGHT("linear height"),
+    /** Height blend mode. */
+    HEIGHT("height"),
+    /** Subtraction blend mode. */
+    SUBTRACTION("subtraction");
 
     companion object {
         /** Helper to find [BlendMode] from String value. */
@@ -911,7 +917,9 @@ data class Layer(
     /** Custom blending range limits. */
     var blendingRanges: BlendingRanges? = null,
     /** Layer styles configuration. */
-    var effects: LayerEffectsInfo? = null
+    var effects: LayerEffectsInfo? = null,
+    /** Preserved raw channel data when read with useRawData = true. */
+    var rawData: RawLayerData? = null
 )
 
 /**
@@ -941,5 +949,147 @@ data class Psd(
     /** Document global mask configuration. */
     var globalLayerMaskInfo: GlobalLayerMaskInfo? = null,
     /** Metadata resource blocks. */
-    var imageResources: ImageResources? = null
+    var imageResources: ImageResources? = null,
+    /** Raw uncompressed or RLE composite data when read with useRawData = true. */
+    var rawCompositeData: ByteArray? = null,
+    /** Document-level pattern resources (Patt/Pat2/Pat3 blocks). */
+    var patterns: MutableList<PatternInfo>? = null
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is Psd) return false
+        if (width != other.width) return false
+        if (height != other.height) return false
+        if (channels != other.channels) return false
+        if (bitsPerChannel != other.bitsPerChannel) return false
+        if (hasAlpha != other.hasAlpha) return false
+        if (colorMode != other.colorMode) return false
+        if (palette != other.palette) return false
+        if (children != other.children) return false
+        if (imageData != other.imageData) return false
+        if (globalLayerMaskInfo != other.globalLayerMaskInfo) return false
+        if (imageResources != other.imageResources) return false
+        if (patterns != other.patterns) return false
+        if (rawCompositeData != null) {
+            if (other.rawCompositeData == null) return false
+            if (!rawCompositeData.contentEquals(other.rawCompositeData)) return false
+        } else if (other.rawCompositeData != null) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = width
+        result = 31 * result + height
+        result = 31 * result + channels
+        result = 31 * result + bitsPerChannel
+        result = 31 * result + hasAlpha.hashCode()
+        result = 31 * result + colorMode.hashCode()
+        result = 31 * result + (palette?.hashCode() ?: 0)
+        result = 31 * result + children.hashCode()
+        result = 31 * result + (imageData?.hashCode() ?: 0)
+        result = 31 * result + (globalLayerMaskInfo?.hashCode() ?: 0)
+        result = 31 * result + (imageResources?.hashCode() ?: 0)
+        result = 31 * result + (patterns?.hashCode() ?: 0)
+        result = 31 * result + (rawCompositeData?.contentHashCode() ?: 0)
+        return result
+    }
+}
+
+/**
+ * Bounding box for document-level patterns.
+ */
+data class PatternBounds(
+    val x: Int = 0,
+    val y: Int = 0,
+    val w: Int,
+    val h: Int
+)
+
+/**
+ * Represents a document-level pattern resource block.
+ */
+data class PatternInfo(
+    /** Unique identifier for the pattern (Pascal string). */
+    var id: String,
+    /** Human-readable pattern name. */
+    var name: String,
+    /** Pattern horizontal offset. */
+    var x: Int = 0,
+    /** Pattern vertical offset. */
+    var y: Int = 0,
+    /** Dimensions and bounds of the pattern. */
+    var bounds: PatternBounds,
+    /** RGBA pixel buffer (8-bit per channel, size w * h * 4). */
+    var data: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PatternInfo) return false
+        if (id != other.id) return false
+        if (name != other.name) return false
+        if (x != other.x) return false
+        if (y != other.y) return false
+        if (bounds != other.bounds) return false
+        return data.contentEquals(other.data)
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + name.hashCode()
+        result = 31 * result + x
+        result = 31 * result + y
+        result = 31 * result + bounds.hashCode()
+        result = 31 * result + data.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Raw channel binary buffer preserved during lazy decoding.
+ */
+data class RawChannelData(
+    val id: ChannelID,
+    val compression: Compression,
+    val data: ByteArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is RawChannelData) return false
+        if (id != other.id) return false
+        if (compression != other.compression) return false
+        return data.contentEquals(other.data)
+    }
+
+    override fun hashCode(): Int {
+        var result = id.hashCode()
+        result = 31 * result + compression.hashCode()
+        result = 31 * result + data.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * Raw layer metadata and channel buffers preserved when `useRawData` is enabled in [ReadOptions].
+ */
+data class RawLayerData(
+    val colorMode: ColorMode,
+    val bitsPerChannel: Int,
+    val channels: List<RawChannelData>,
+    val large: Boolean
+)
+
+/**
+ * Options for configuring PSD file parsing.
+ */
+data class ReadOptions(
+    /** If true, layer and mask pixel data are not decompressed upfront, but can be lazily decoded later. */
+    val useRawData: Boolean = false,
+    /** Maximum total memory (in bytes) that can be allocated for decoded pixel buffers. Default is 2GB. */
+    val totalMemoryLimit: Long? = 2L * 1024 * 1024 * 1024,
+    /** Skip decoding the composite flattened image data. */
+    val skipCompositeImageData: Boolean = false,
+    /** Skip decoding layer pixel data. */
+    val skipLayerImageData: Boolean = false,
+    /** Throw an exception when encountering unsupported or missing features. */
+    val throwForMissingFeatures: Boolean = false
 )
