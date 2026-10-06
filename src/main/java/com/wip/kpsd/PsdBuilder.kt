@@ -165,6 +165,23 @@ class LayerBuilder(var name: String? = null) {
     }
 
     /**
+     * Automatically sizes and positions this layer to fit within the given [boundary] shape.
+     */
+    fun fitToBoundary(
+        boundary: TextBoundary,
+        rotation: Double = 0.0,
+        paddingPercentage: Float = 0f,
+        bounds: PsdBounds? = null
+    ): EffectiveTextLayout {
+        val layout = EffectiveTextLayout.compute(boundary, rotation, paddingPercentage, bounds)
+        this.top = layout.top
+        this.left = layout.left
+        this.bottom = layout.bottom
+        this.right = layout.right
+        return layout
+    }
+
+    /**
      * Builds and returns the configured [Layer].
      */
     fun build(): Layer {
@@ -438,6 +455,39 @@ class TextLayerBuilder(var name: String? = null, var text: String) {
      */
     fun effects(block: EffectsBuilder.() -> Unit) {
         effects = EffectsBuilder().apply(block).build()
+    }
+
+    /**
+     * Automatically sets [boxBounds], rotation [transform], [boundaryShape],
+     * and centers the text box around the shape's visual center.
+     *
+     * @param boundary The [TextBoundary] shape (e.g. [PolygonBoundary], [EllipseBoundary]).
+     * @param rotation Rotation in degrees.
+     * @param paddingPercentage Optional padding percentage relative to min(boxWidth, boxHeight).
+     * @param bounds Optional explicit bounding box if boundary has no naturalBounds.
+     * @return The computed [EffectiveTextLayout].
+     */
+    fun fitToBoundary(
+        boundary: TextBoundary,
+        rotation: Double = 0.0,
+        paddingPercentage: Float = 0f,
+        bounds: PsdBounds? = null
+    ): EffectiveTextLayout {
+        val layout = EffectiveTextLayout.compute(boundary, rotation, paddingPercentage, bounds)
+        this.top = layout.top
+        this.left = layout.left
+        this.bottom = layout.bottom
+        this.right = layout.right
+        this.shapeType = TextShapeType.BOX
+        this.boxBounds = floatArrayOf(0f, 0f, layout.boxWidth.toFloat(), layout.boxHeight.toFloat())
+
+        val theta = Math.toRadians(rotation)
+        val cos = kotlin.math.cos(theta)
+        val sin = kotlin.math.sin(theta)
+        this.transform(cos, sin, -sin, cos, layout.tx, layout.ty)
+
+        this.boundaryShape = layout.boundaryShape
+        return layout
     }
 
     /**

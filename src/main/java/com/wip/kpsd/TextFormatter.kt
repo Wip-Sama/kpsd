@@ -182,11 +182,17 @@ object TextFormatter {
             }
         }
 
+        fun getAvailableLineWidth(baseline: Float): Float {
+            val topY = baseline - metrics.ascent
+            val bottomY = baseline + metrics.descent
+            return minOf(
+                shape.getAvailableWidth(topY, bounds),
+                shape.getAvailableWidth(bottomY, bounds)
+            )
+        }
+
         for (word in words) {
-            val topY = currentBaseline - metrics.ascent
-            val bottomY = currentBaseline + metrics.descent
-            val extremeY = if (abs(topY) > abs(bottomY)) topY else bottomY
-            val availableWidth = shape.getAvailableWidth(extremeY, bounds)
+            val availableWidth = getAvailableLineWidth(currentBaseline)
 
             val testLine = if (currentLine.isEmpty()) word else "$currentLine $word"
             // Multiply the AWT string width by a safety factor to prevent
@@ -205,10 +211,7 @@ object TextFormatter {
                     }
                     var remainingWord = word
                     while (remainingWord.isNotEmpty()) {
-                        val cTopY = currentBaseline - metrics.ascent
-                        val cBottomY = currentBaseline + metrics.descent
-                        val cExtremeY = if (abs(cTopY) > abs(cBottomY)) cTopY else cBottomY
-                        val availW = shape.getAvailableWidth(cExtremeY, bounds)
+                        val availW = getAvailableLineWidth(currentBaseline)
                         var splitIndex = 0
                         val dashWidth = if (wordBreak == WordBreak.HYPHENATE) metrics.stringWidth("-") else 0
 
@@ -240,10 +243,7 @@ object TextFormatter {
             }
         }
         if (currentLine.isNotEmpty()) {
-            val topY = currentBaseline - metrics.ascent
-            val bottomY = currentBaseline + metrics.descent
-            val extremeY = if (abs(topY) > abs(bottomY)) topY else bottomY
-            val availW = shape.getAvailableWidth(extremeY, bounds)
+            val availW = getAvailableLineWidth(currentBaseline)
             commitLine(currentLine, availW)
         }
 
