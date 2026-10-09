@@ -13,10 +13,35 @@ KPsd is a high-performance Kotlin/JVM library for reading and writing Photoshop 
 ### Prerequisites
 - JDK 21 or higher.
 
-### Run Tests
+### Run Tests & Verification
+Run unit tests:
 ```bash
 ./gradlew test
 ```
+
+Run test coverage verification and generate reports (HTML & XML):
+```bash
+./gradlew check
+```
+
+You can also run specific Kover tasks:
+- **Verify Coverage Boundaries:**
+  ```bash
+  ./gradlew koverVerify
+  ```
+- **Generate HTML Report:**
+  ```bash
+  ./gradlew koverHtmlReport
+  ```
+  Reports are generated at `build/reports/kover/html/index.html`.
+- **Generate XML Report:**
+  ```bash
+  ./gradlew koverXmlReport
+  ```
+- **Print Coverage to Console:**
+  ```bash
+  ./gradlew koverLog
+  ```
 
 ### Local Publishing
 Publish to the local Maven repository (`~/.m2/repository`) for testing integrations:

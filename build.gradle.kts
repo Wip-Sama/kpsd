@@ -2,6 +2,7 @@ plugins {
     id("java-library")
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.dokka)
+    alias(libs.plugins.kover)
     `maven-publish`
 }
 
@@ -40,6 +41,24 @@ dependencies {
 
 tasks.test {
     useJUnit()
+}
+
+kover {
+    reports {
+        total {
+            xml {
+                onCheck = true
+            }
+            html {
+                onCheck = true
+            }
+            verify {
+                rule {
+                    minBound(80)
+                }
+            }
+        }
+    }
 }
 
 publishing {
